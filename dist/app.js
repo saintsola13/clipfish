@@ -24,6 +24,12 @@
   const dlBtn = document.getElementById("dlBtn");
   const closeBtn = document.getElementById("closeBtn");
   const installBtn = document.getElementById("installBtn");
+  const gate = document.getElementById("gate");
+  const startBtn = document.getElementById("startBtn");
+  const ovalBtn = document.getElementById("ovalBtn");
+  const jamBtn = document.getElementById("jamBtn");
+  const stampBtn = document.getElementById("stampBtn");
+  const bed = document.getElementById("bed");
 
   let gl = null;
   let program = null;
@@ -42,6 +48,17 @@
   let recStarted = 0;
   let raf = 0;
   let deferredPrompt = null;
+  let ovalOn = false;
+  let uOval = null;
+  let jamOn = true;
+  let stampOn = false;
+  let audioCtx = null;
+  let bedBuffer = null;
+  let bedSource = null;
+  let speakerGain = null;
+  let stampGain = null;
+  let mixDest = null;
+  let micNode = null;
 
   const VERT = `
     attribute vec2 aPos;
@@ -59,6 +76,7 @@
     uniform sampler2D uTex;
     uniform float uStrength;
     uniform vec2 uResolution;
+    uniform float uOval;
     void main() {
       vec2 uv = vUv;
       vec2 c = uv * 2.0 - 1.0;
@@ -70,11 +88,20 @@
       vec2 d = c / barrel;
       d.x /= aspect;
       vec2 sampleUv = d * 0.5 + 0.5;
-      if (sampleUv.x < 0.0 || sampleUv.x > 1.0 || sampleUv.y < 0.0 || sampleUv.y > 1.0) {
-        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        return;
+      vec4 col = vec4(0.0, 0.0, 0.0, 1.0);
+      if (sampleUv.x >= 0.0 && sampleUv.x <= 1.0 && sampleUv.y >= 0.0 && sampleUv.y <= 1.0) {
+        col = texture2D(uTex, sampleUv);
       }
-      gl_FragColor = texture2D(uTex, sampleUv);
+      if (uOval > 0.5) {
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= aspect;
+        float margin = 0.90;
+        float radius = min(aspect, 1.0) * margin;
+        float er = length(p) / max(radius, 0.001);
+        float mask = 1.0 - smoothstep(0.96, 1.04, er);
+        col.rgb *= mask;
+      }
+      gl_FragColor = col;
     }
   `;
 
@@ -129,6 +156,7 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     uStrength = gl.getUniformLocation(program, "uStrength");
     uResolution = gl.getUniformLocation(program, "uResolution");
+    uOval = gl.getUniformLocation(program, "uOval");
   }
 
   function sizeCanvas() {
@@ -147,25 +175,72 @@
     sizeCanvas();
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    try {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    } catch (err) {
+      return;
+    }
     gl.uniform1f(uStrength, Number(strength.value) / 100);
     gl.uniform2f(uResolution, canvas.width, canvas.height);
+    gl.uniform1f(uOval, ovalOn ? 1.0 : 0.0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  async function openCam() {
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    const constraints = {
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: {
-        facingMode,
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
+  function stopStream() {
+    if (!stream) return;
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    audioTrack = null;
+  }
+
+  async function getStream(mode) {
+    const videoTries = [
+      { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      { facingMode: { ideal: mode } },
+      { facingMode: mode },
+      true
+    ];
+    let lastErr = null;
+    for (const videoConstraint of videoTries) {
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          video: videoConstraint,
+          audio: micOn ? { echoCancellation: true, noiseSuppression: true } : false
+        });
+      } catch (err) {
+        lastErr = err;
       }
-    };
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    }
+    try {
+      const videoOnly = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: mode } },
+        audio: false
+      });
+      if (micOn) {
+        try {
+          const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          mic.getAudioTracks().forEach((t) => videoOnly.addTrack(t));
+        } catch (err) {
+          /* mic optional */
+        }
+      }
+      return videoOnly;
+    } catch (err) {
+      throw lastErr || err;
+    }
+  }
+
+  async function openCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("camera api missing — use safari/chrome on https");
+    }
+    stopStream();
+    stream = await getStream(facingMode);
     audioTrack = stream.getAudioTracks()[0] || null;
     if (audioTrack) audioTrack.enabled = micOn;
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("webkit-playsinline", "true");
+    video.muted = true;
     video.srcObject = stream;
     await video.play();
     muteBtn.textContent = micOn ? "mic" : "mute";
@@ -173,12 +248,47 @@
 
   function pickMime() {
     const types = [
+      "video/mp4",
+      "video/mp4;codecs=avc1,mp4a.40.2",
       "video/webm;codecs=vp9,opus",
       "video/webm;codecs=vp8,opus",
-      "video/webm",
-      "video/mp4"
+      "video/webm"
     ];
-    return types.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+    if (!window.MediaRecorder) return "";
+    return types.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  }
+
+  function extFor(blob) {
+    const type = (blob && blob.type) || "";
+    if (type.includes("mp4")) return "mp4";
+    if (type.includes("png")) return "png";
+    if (type.includes("jpeg") || type.includes("jpg")) return "jpg";
+    return "webm";
+  }
+
+  async function saveToPhotos(blob, basename) {
+    if (!blob) return;
+    const name = basename + "." + extFor(blob);
+    const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "clipfish" });
+        ping("pick save video / save image");
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    ping("saved — check downloads / photos");
   }
 
   function fmt(ms) {
@@ -199,14 +309,108 @@
     timerEl.textContent = "00:00";
   }
 
+  async function hookBedGraph() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    if (!speakerGain) {
+      speakerGain = audioCtx.createGain();
+      speakerGain.gain.value = jamOn ? 0.8 : 0;
+      speakerGain.connect(audioCtx.destination);
+    }
+    if (!stampGain) {
+      stampGain = audioCtx.createGain();
+      stampGain.gain.value = 0.7;
+    }
+    if (!bedSource) {
+      try {
+        bedSource = audioCtx.createMediaElementSource(bed);
+        bedSource.connect(speakerGain);
+        bedSource.connect(stampGain);
+      } catch (err) {
+        bedSource = true;
+      }
+    }
+  }
+
+  async function ensureBed() {
+    bed.loop = true;
+    bed.playsInline = true;
+    bed.setAttribute("playsinline", "true");
+    bed.muted = false;
+    bed.volume = jamOn ? 0.85 : 0;
+    const playNow = bed.play();
+    try { await hookBedGraph(); } catch (err) {}
+    try { await playNow; } catch (err) {
+      try { await bed.play(); } catch (err2) { throw err2; }
+    }
+    if (speakerGain) speakerGain.gain.value = jamOn ? 0.8 : 0;
+  }
+
+  function setJam(on) {
+    jamOn = on;
+    jamBtn.classList.toggle("active", jamOn);
+    jamBtn.setAttribute("aria-pressed", jamOn ? "true" : "false");
+    jamBtn.textContent = jamOn ? "jam on" : "jam off";
+    bed.volume = jamOn ? 0.85 : 0;
+    bed.muted = !jamOn;
+    if (speakerGain) speakerGain.gain.value = jamOn ? 0.8 : 0;
+    if (jamOn) bed.play().catch(() => {});
+    else bed.pause();
+  }
+
+  function setStamp(on) {
+    stampOn = on;
+    stampBtn.classList.toggle("active", stampOn);
+    stampBtn.setAttribute("aria-pressed", stampOn ? "true" : "false");
+    stampBtn.textContent = stampOn ? "stamp on" : "stamp off";
+  }
+
+  jamBtn.addEventListener("click", async () => {
+    try { await ensureBed(); } catch (err) { ping("track blocked"); }
+    setJam(!jamOn);
+    ping(jamOn ? "skate and destroy looping" : "jam muted");
+  });
+
+  stampBtn.addEventListener("click", () => {
+    setStamp(!stampOn);
+    ping(stampOn ? "track stamps the clip" : "clip stays dry");
+  });
+
   function startRec() {
-    if (!stream) return;
+    if (!stream) {
+      ping("open camera first");
+      return;
+    }
+    if (!window.MediaRecorder) {
+      ping("recording not supported on this browser");
+      return;
+    }
     chunks = [];
-    const canvasStream = canvas.captureStream(30);
-    const mixed = new MediaStream(canvasStream.getVideoTracks());
-    if (micOn && audioTrack) mixed.addTrack(audioTrack);
+    let recordStream;
+    try {
+      const canvasStream = canvas.captureStream(30);
+      recordStream = new MediaStream(canvasStream.getVideoTracks());
+    } catch (err) {
+      recordStream = new MediaStream(stream.getVideoTracks());
+    }
+    try {
+      if (stampOn && audioCtx && stampGain) {
+        mixDest = audioCtx.createMediaStreamDestination();
+        stampGain.connect(mixDest);
+        if (micOn && audioTrack) {
+          if (micNode) try { micNode.disconnect(); } catch (e) {}
+          micNode = audioCtx.createMediaStreamSource(new MediaStream([audioTrack]));
+          micNode.connect(mixDest);
+        }
+        mixDest.stream.getAudioTracks().forEach((t) => recordStream.addTrack(t));
+      } else if (micOn && audioTrack) {
+        recordStream.addTrack(audioTrack);
+      }
+    } catch (err) {
+      if (micOn && audioTrack) recordStream.addTrack(audioTrack);
+    }
     const mime = pickMime();
-    recorder = mime ? new MediaRecorder(mixed, { mimeType: mime }) : new MediaRecorder(mixed);
+    recorder = mime ? new MediaRecorder(recordStream, { mimeType: mime }) : new MediaRecorder(recordStream);
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     recorder.onstop = () => {
       recBlob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
@@ -227,6 +431,14 @@
     recBtn.classList.remove("live");
     recPill.classList.remove("on");
     stopTimer();
+    if (stampGain && mixDest) {
+      try { stampGain.disconnect(mixDest); } catch (err) {}
+    }
+    if (micNode) {
+      try { micNode.disconnect(); } catch (err) {}
+      micNode = null;
+    }
+    mixDest = null;
   }
 
   function setPreset(name) {
@@ -241,6 +453,17 @@
   document.querySelectorAll(".chip[data-lens]").forEach((el) => {
     el.addEventListener("click", () => setPreset(el.dataset.lens));
   });
+
+  function setOval(on) {
+    ovalOn = on;
+    ovalBtn.classList.toggle("active", ovalOn);
+    ovalBtn.setAttribute("aria-pressed", ovalOn ? "true" : "false");
+    ovalBtn.textContent = ovalOn ? "circle on" : "circle off";
+    try { localStorage.setItem("clipfish-oval", ovalOn ? "1" : "0"); } catch (err) {}
+  }
+
+  ovalBtn.addEventListener("click", () => setOval(!ovalOn));
+  try { if (localStorage.getItem("clipfish-oval") === "1") setOval(true); } catch (err) {}
 
   strength.addEventListener("input", () => {
     strengthLabel.textContent = (Number(strength.value) / 100).toFixed(2);
@@ -267,32 +490,15 @@
   shotBtn.addEventListener("click", () => {
     canvas.toBlob((blob) => {
       if (!blob) return;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "clipfish-still.png";
-      a.click();
-    }, "image/png");
+      saveToPhotos(blob, "clipfish-still");
+    }, "image/jpeg", 0.92);
   });
 
   closeBtn.addEventListener("click", () => sheet.classList.remove("open"));
 
-  dlBtn.addEventListener("click", () => {
-    if (!recUrl) return;
-    const a = document.createElement("a");
-    a.href = recUrl;
-    a.download = "clipfish-clip.webm";
-    a.click();
-  });
+  dlBtn.addEventListener("click", () => saveToPhotos(recBlob, "clipfish-clip"));
 
-  shareBtn.addEventListener("click", async () => {
-    if (!recBlob) return;
-    const file = new File([recBlob], "clipfish-clip.webm", { type: recBlob.type });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: "clipfish" });
-    } else {
-      ping("share not supported — download instead");
-    }
-  });
+  shareBtn.addEventListener("click", () => saveToPhotos(recBlob, "clipfish-clip"));
 
   window.addEventListener("resize", sizeCanvas);
 
@@ -314,13 +520,30 @@
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
 
-  (async () => {
+  async function bootCam() {
     try {
-      initGL();
+      if (!gl) initGL();
       await openCam();
-      draw();
+      try { await ensureBed(); } catch (err) { /* music optional */ }
+      if (!raf) draw();
+      gate.classList.add("hidden");
+      ping("lens live");
     } catch (err) {
-      ping("allow camera + mic");
+      gate.classList.remove("hidden");
+      startBtn.textContent = "try camera again";
+      ping(err && err.message ? err.message : "allow camera + mic");
     }
-  })();
+  }
+
+  startBtn.addEventListener("click", () => {
+    ensureBed().catch(() => {});
+    bootCam();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && stream && video.paused) {
+      video.play().catch(() => {});
+    }
+  });
+
+  try { initGL(); } catch (err) { ping("webgl missing"); }
 })();
