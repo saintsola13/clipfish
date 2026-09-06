@@ -10,15 +10,17 @@
   <title>clipfish</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="./icons/icon.svg" />
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <style>
     :root {
       --bg: #050505;
-      --ink: #f3f3f3;
-      --mute: #9aa09a;
+      --ink: #f6f6f6;
+      --mute: #b7bdb4;
       --slime: #c8ff3d;
-      --panel: rgba(8, 8, 8, 0.78);
-      --line: rgba(200, 255, 61, 0.35);
+      --slime-2: #9aff2a;
+      --glass: rgba(12, 12, 12, 0.42);
+      --glass-2: rgba(255, 255, 255, 0.08);
+      --line: rgba(200, 255, 61, 0.55);
       --danger: #ff3b5c;
       --safe: env(safe-area-inset-bottom, 12px);
     }
@@ -29,71 +31,221 @@
       overflow: hidden;
     }
     #stage { position: fixed; inset: 0; background: #000; }
-    #view, #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    #view, #video {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover;
+    }
     #video { opacity: 0; pointer-events: none; }
-    .hud { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; z-index: 3; }
+    #bezel {
+      position: fixed; inset: 8px; z-index: 2; pointer-events: none;
+      border: 3px solid var(--slime);
+      border-radius: 28px;
+      box-shadow:
+        inset 0 0 0 2px #111,
+        inset 0 0 24px rgba(200,255,61,.16),
+        0 0 0 6px #050505,
+        0 0 28px rgba(200,255,61,.35);
+    }
+    #bezel:before, #bezel:after {
+      content: ""; position: absolute; width: 18px; height: 18px;
+      border: 2px solid var(--slime); border-radius: 4px;
+    }
+    #bezel:before { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
+    #bezel:after { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
+    .hud {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      justify-content: space-between; pointer-events: none; z-index: 3;
+      padding: 16px 14px calc(12px + var(--safe));
+    }
     .hud > * { pointer-events: auto; }
+    .glass {
+      background: linear-gradient(180deg, var(--glass-2), var(--glass));
+      border: 1px solid var(--line);
+      box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.16);
+      backdrop-filter: blur(16px) saturate(140%);
+      -webkit-backdrop-filter: blur(16px) saturate(140%);
+    }
+    .topbar, .dock, .lenses, .slider-wrap {
+      border-radius: 18px;
+    }
     .topbar, .dock {
       display: flex; align-items: center; gap: 10px;
-      padding: 12px 14px calc(12px + var(--safe));
-      background: linear-gradient(to bottom, rgba(0,0,0,.72), transparent);
+      padding: 8px 10px;
     }
-    .dock { justify-content: space-between; background: linear-gradient(to top, rgba(0,0,0,.82), transparent); padding-top: 18px; }
+    .dock { justify-content: space-between; padding: 10px; }
     .brand { display: flex; align-items: center; gap: 10px; }
-    .mark { width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--slime); }
-    .word { font-size: 28px; letter-spacing: -0.04em; line-height: 1; text-transform: lowercase; font-weight: 800; text-shadow: 0 0 18px rgba(200,255,61,.45); }
+    .brand img {
+      width: 52px; height: 52px; border-radius: 0;
+      border: 0; object-fit: contain; background: transparent;
+      filter: drop-shadow(0 0 10px rgba(200,255,61,.45));
+    }
+    .word {
+      font-size: 26px; letter-spacing: -0.04em; line-height: 1;
+      text-transform: lowercase; font-weight: 800;
+      text-shadow: 0 0 18px rgba(200,255,61,.45);
+    }
     .word span { color: var(--slime); }
-    .rec-pill { margin-left: auto; display: none; align-items: center; gap: 8px; border: 1px solid var(--danger); color: #fff; border-radius: 999px; padding: 6px 10px; font-size: 12px; letter-spacing: .12em; }
+    .rec-pill {
+      margin-left: auto; display: none; align-items: center; gap: 8px;
+      border: 1px solid var(--danger); color: #fff; border-radius: 999px;
+      padding: 6px 10px; font-size: 12px; letter-spacing: .12em;
+      background: rgba(20,0,4,.45);
+    }
     .rec-pill.on { display: flex; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
     @keyframes blink { 50% { opacity: .25; } }
-    .lenses { display: flex; gap: 8px; padding: 0 14px; flex-wrap: wrap; }
-    .chip, button.icon, .rec { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 8px 12px; font: inherit; cursor: pointer; }
-    .chip.active { background: var(--slime); color: #111; border-color: var(--slime); font-weight: 700; }
-    .controls { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; width: 100%; }
+    .mid {
+      display: flex; flex-direction: column; gap: 8px; margin-top: auto;
+    }
+    .lenses {
+      display: flex; gap: 8px; padding: 8px; flex-wrap: wrap;
+    }
+    .chip, button.icon {
+      border: 1px solid var(--line);
+      background: rgba(8,8,8,.28);
+      color: var(--ink);
+      border-radius: 14px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    .chip.active {
+      background: var(--slime); color: #111; border-color: #fff; font-weight: 700;
+    }
+    .controls {
+      display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+      gap: 12px; width: 100%;
+    }
     .side { display: flex; gap: 8px; }
     .side.right { justify-content: flex-end; }
-    button.icon { width: 46px; height: 46px; border-radius: 50%; padding: 0; font-size: 16px; }
-    .rec { width: 76px; height: 76px; border-radius: 50%; border: 4px solid #fff; background: var(--danger); box-shadow: 0 0 0 4px rgba(255,59,92,.25); }
+    button.icon {
+      width: 46px; height: 46px; border-radius: 16px; padding: 0; font-size: 15px;
+    }
+    .rec {
+      width: 74px; height: 74px; border-radius: 50%; border: 4px solid #fff;
+      background: var(--danger); box-shadow: 0 0 0 3px rgba(200,255,61,.35);
+      cursor: pointer;
+    }
     .rec.live { background: #111; border-color: var(--danger); }
-    .slider-wrap { padding: 0 16px 8px; color: var(--mute); font-size: 12px; letter-spacing: .08em; text-transform: lowercase; }
+    .slider-wrap {
+      padding: 8px 12px; color: var(--mute); font-size: 12px; letter-spacing: .08em;
+      text-transform: lowercase;
+    }
     input[type=range] { width: 100%; accent-color: var(--slime); }
-    .toast { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); background: #111; border: 1px solid var(--slime); color: var(--slime); padding: 8px 12px; border-radius: 10px; z-index: 5; display: none; }
-    .sheet { display: none; position: fixed; inset: 0; z-index: 8; background: rgba(0,0,0,.72); align-items: flex-end; justify-content: center; }
+    .toast {
+      position: fixed; left: 50%; bottom: 168px; transform: translateX(-50%);
+      background: rgba(8,8,8,.6); border: 1px solid var(--slime); color: var(--slime);
+      padding: 8px 12px; border-radius: 14px; z-index: 5; display: none;
+      backdrop-filter: blur(12px);
+    }
+    .sheet {
+      display: none; position: fixed; inset: 0; z-index: 8; background: rgba(0,0,0,.55);
+      align-items: flex-end; justify-content: center;
+    }
     .sheet.open { display: flex; }
-    .card { width: min(560px, 100%); background: #0c0c0c; border-top: 2px solid var(--slime); border-radius: 22px 22px 0 0; padding: 16px 16px calc(18px + var(--safe)); }
-    video.replay { width: 100%; border-radius: 12px; background: #000; max-height: 48vh; }
+    .card {
+      width: min(560px, 100%);
+      background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(8,8,8,.78));
+      border-top: 2px solid var(--slime);
+      border-radius: 22px 22px 0 0; padding: 16px 16px calc(18px + var(--safe));
+      backdrop-filter: blur(18px);
+    }
+    video.replay { width: 100%; border-radius: 12px; background: #000; max-height: 48vh; border: 1px solid var(--line); }
     .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     .row button { flex: 1; min-width: 90px; }
-    .install { display: none; margin-left: 8px; border-color: var(--slime); color: var(--slime); }
+    .install {
+      display: none; margin-left: 8px; border-color: var(--slime); color: var(--slime);
+    }
     .install.show { display: inline-flex; }
+    #gate {
+      position: fixed; inset: 0; z-index: 9; display: flex;
+      align-items: center; justify-content: center; flex-direction: column;
+      gap: 14px; background: rgba(5,5,5,.92); text-align: center; padding: 24px;
+    }
+    #gate.hidden { display: none; }
+    #gate img { width: 210px; height: 210px; object-fit: contain; background: transparent; filter: drop-shadow(0 0 18px rgba(200,255,61,.45)); }
+    #gate button {
+      border: 0; background: var(--slime); color: #111; font: inherit;
+      font-weight: 800; letter-spacing: .02em; text-transform: lowercase;
+      padding: 14px 22px; border-radius: 999px; font-size: 18px;
+    }
+    #gate p { color: var(--mute); margin: 0; max-width: 280px; }
+    @media (orientation: landscape) {
+      .hud {
+        flex-direction: row;
+        align-items: stretch;
+        padding: 10px calc(10px + env(safe-area-inset-right, 0px)) 10px calc(10px + env(safe-area-inset-left, 0px));
+      }
+      .topbar {
+        position: absolute;
+        top: 10px;
+        left: calc(10px + env(safe-area-inset-left, 0px));
+        max-width: 46vw;
+        z-index: 4;
+      }
+      .word { font-size: 20px; }
+      .brand img { width: 40px; height: 40px; }
+      .mid {
+        margin: 0 0 0 auto;
+        width: min(168px, 30vw);
+        height: 100%;
+        justify-content: center;
+        overflow: auto;
+      }
+      .lenses { flex-direction: column; flex-wrap: nowrap; }
+      .chip { width: 100%; text-align: center; padding: 7px 8px; }
+      .controls {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .side, .side.right {
+        justify-content: center;
+        flex-direction: column;
+      }
+      .rec { width: 62px; height: 62px; }
+      .toast { left: 38%; bottom: 18px; }
+      .sheet { align-items: center; }
+      .card {
+        width: min(640px, 92%);
+        border-radius: 22px;
+        max-height: 92vh;
+        overflow: auto;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="stage">
-    <video id="video" playsinline muted autoplay></video>
+    <video id="video" playsinline muted autoplay webkit-playsinline></video>
     <canvas id="view"></canvas>
   </div>
+  <div id="bezel"></div>
   <div class="hud">
-    <div class="topbar">
+    <div class="topbar glass">
       <div class="brand">
-        <img class="mark" src="./icons/icon.svg" alt="clipfish" />
+        <img src="./branding/clipfish-cutout.png" alt="clipfish" />
         <div class="word">clip<span>fish</span></div>
       </div>
       <button class="chip install" id="installBtn" type="button">install</button>
       <div class="rec-pill" id="recPill"><span class="dot"></span><span id="timer">00:00</span></div>
     </div>
-    <div>
-      <div class="lenses">
+    <div class="mid">
+      <div class="lenses glass">
         <button class="chip" data-lens="clean" type="button">clean</button>
         <button class="chip active" data-lens="classic" type="button">classic</button>
         <button class="chip" data-lens="deep" type="button">deep</button>
+        <button class="chip" id="ovalBtn" type="button" aria-pressed="false">circle off</button>
+        <button class="chip active" id="jamBtn" type="button" aria-pressed="true">jam on</button>
+        <button class="chip" id="stampBtn" type="button" aria-pressed="false">stamp off</button>
       </div>
-      <div class="slider-wrap">
+      <div class="slider-wrap glass">
         fisheye <span id="strengthLabel">0.58</span>
         <input id="strength" type="range" min="0" max="100" value="58" />
       </div>
-      <div class="dock">
+      <div class="dock glass">
         <div class="controls">
           <div class="side">
             <button class="icon" id="flipBtn" type="button" title="flip camera">flip</button>
@@ -114,11 +266,21 @@
       <video class="replay" id="replay" controls playsinline></video>
       <div class="row">
         <button class="chip" id="shareBtn" type="button">share</button>
-        <button class="chip" id="dlBtn" type="button">download</button>
+        <button class="chip" id="dlBtn" type="button">save to photos</button>
         <button class="chip" id="closeBtn" type="button">close</button>
       </div>
     </div>
   </div>
+  <div id="gate">
+    <img src="./branding/clipfish-cutout.png" alt="clipfish" />
+    <div class="word">clip<span>fish</span></div>
+    <p>tap to open the lens. allow camera + mic when the phone asks.</p>
+    <button id="startBtn" type="button">open camera</button>
+  </div>
+  <audio id="bed" loop playsinline preload="auto">
+    <source src="./audio/skate-and-destroy.mp3" type="audio/mpeg" />
+    <source src="./audio/skate-and-destroy.m4a" type="audio/mp4" />
+  </audio>
   <script src="./app.js"></script>
 </body>
 </html>
