@@ -202,12 +202,12 @@
   }
 
   async function getStream(mode) {
-    // Phones (esp. iOS) often hang on combined cam+mic. Always open video first,
-    // then attach mic in a second call. Keep constraints soft and few.
+    // Soft constraints only. Never stack cam+mic. Prefer plain video:true first —
+    // facingMode/ideal can hang some iOS builds after Allow.
     const videoTries = [
-      { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      true,
       { facingMode: { ideal: mode } },
-      true
+      { facingMode: mode }
     ];
     let lastErr = null;
     let videoStream = null;
@@ -215,30 +215,29 @@
       try {
         videoStream = await withTimeout(
           navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false }),
-          20000,
-          "camera permission timed out"
+          12000,
+          "camera timed out — check Settings → Camera for this site"
         );
         break;
       } catch (err) {
         lastErr = err;
+        // Don't burn more tries if user denied
+        if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) break;
       }
     }
     if (!videoStream) throw lastErr || new Error("camera blocked");
 
+    // Mic later, never blocks the lens
     if (micOn) {
       try {
         const mic = await withTimeout(
-          navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true },
-            video: false
-          }),
-          12000,
-          "mic permission timed out"
+          navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+          6000,
+          "mic timed out"
         );
         mic.getAudioTracks().forEach((t) => videoStream.addTrack(t));
       } catch (err) {
-        /* mic optional — cam still works */
-        try { ping("camera ok — mic skipped"); } catch (e) {}
+        try { ping("camera ok — mic off"); } catch (e) {}
       }
     }
     return videoStream;
@@ -248,27 +247,44 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       throw new Error("camera api missing — use safari/chrome on https");
     }
+    // Already denied? fail fast with a clear tip
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const st = await navigator.permissions.query({ name: "camera" });
+        if (st && st.state === "denied") {
+          throw new Error("camera denied — enable in phone Settings for clipfish.pages.dev");
+        }
+      }
+    } catch (err) {
+      if (err && err.message && err.message.indexOf("denied") !== -1) throw err;
+    }
+
     stopStream();
     stream = await getStream(facingMode);
     audioTrack = stream.getAudioTracks()[0] || null;
     if (audioTrack) audioTrack.enabled = micOn;
+
     video.setAttribute("playsinline", "true");
     video.setAttribute("webkit-playsinline", "true");
     video.setAttribute("autoplay", "true");
     video.muted = true;
     video.playsInline = true;
     video.srcObject = stream;
-    // iOS needs a real user-gesture play; wait for metadata then play
-    await new Promise((resolve) => {
+
+    await withTimeout(new Promise((resolve) => {
       if (video.readyState >= 1) resolve();
-      else video.onloadedmetadata = () => resolve();
-    });
+      else {
+        const done = () => resolve();
+        video.onloadedmetadata = done;
+        video.onloadeddata = done;
+      }
+    }), 8000, "camera started but preview stalled — tap try again");
+
     try {
-      await video.play();
+      await withTimeout(video.play(), 5000, "preview play blocked — tap try again");
     } catch (err) {
-      // one more try after a tick
-      await new Promise((r) => setTimeout(r, 50));
-      await video.play();
+      await new Promise((r) => setTimeout(r, 80));
+      await withTimeout(video.play(), 5000, "preview play blocked — tap try again");
     }
     muteBtn.textContent = micOn ? "mic" : "mute";
   }
@@ -550,28 +566,29 @@
   async function bootCam() {
     if (startBtn.disabled) return;
     startBtn.disabled = true;
-    const prevLabel = startBtn.textContent;
-    startBtn.textContent = "waiting for camera…";
-    ping("allow camera when asked");
+    startBtn.textContent = "allow camera…";
+    ping("tap Allow on the system popup");
+    const tip = setTimeout(() => {
+      ping("no popup? Settings → Safari/Chrome → Camera → allow clipfish");
+    }, 3500);
     try {
       if (!gl) initGL();
       await openCam();
-      // music after cam so we don't fight the permission prompt
       try { await ensureBed(); } catch (err) { /* music optional */ }
       if (!raf) draw();
       gate.classList.add("hidden");
-      startBtn.disabled = false;
-      startBtn.textContent = prevLabel || "open lens";
       ping("lens live");
     } catch (err) {
       stopStream();
       gate.classList.remove("hidden");
-      startBtn.disabled = false;
-      startBtn.textContent = "try camera again";
       const msg = err && err.name === "NotAllowedError"
-        ? "permission denied — check site settings"
+        ? "permission denied — enable camera for this site in Settings"
         : (err && err.message ? err.message : "allow camera");
       ping(msg);
+    } finally {
+      clearTimeout(tip);
+      startBtn.disabled = false;
+      startBtn.textContent = "try camera again";
     }
   }
 
