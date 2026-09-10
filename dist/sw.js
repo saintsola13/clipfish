@@ -1,4 +1,4 @@
-const CACHE = "clipfish-v3";
+const CACHE = "clipfish-v4";
 const PRECACHE = [
   "./",
   "./index.html",
