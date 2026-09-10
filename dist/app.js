@@ -193,41 +193,55 @@
     audioTrack = null;
   }
 
+  function withTimeout(promise, ms, label) {
+    let timer = 0;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(label || "timed out — tap try again")), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
   async function getStream(mode) {
+    // Phones (esp. iOS) often hang on combined cam+mic. Always open video first,
+    // then attach mic in a second call. Keep constraints soft and few.
     const videoTries = [
       { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
       { facingMode: { ideal: mode } },
-      { facingMode: mode },
       true
     ];
     let lastErr = null;
+    let videoStream = null;
     for (const videoConstraint of videoTries) {
       try {
-        return await navigator.mediaDevices.getUserMedia({
-          video: videoConstraint,
-          audio: micOn ? { echoCancellation: true, noiseSuppression: true } : false
-        });
+        videoStream = await withTimeout(
+          navigator.mediaDevices.getUserMedia({ video: videoConstraint, audio: false }),
+          20000,
+          "camera permission timed out"
+        );
+        break;
       } catch (err) {
         lastErr = err;
       }
     }
-    try {
-      const videoOnly = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: mode } },
-        audio: false
-      });
-      if (micOn) {
-        try {
-          const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          mic.getAudioTracks().forEach((t) => videoOnly.addTrack(t));
-        } catch (err) {
-          /* mic optional */
-        }
+    if (!videoStream) throw lastErr || new Error("camera blocked");
+
+    if (micOn) {
+      try {
+        const mic = await withTimeout(
+          navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true },
+            video: false
+          }),
+          12000,
+          "mic permission timed out"
+        );
+        mic.getAudioTracks().forEach((t) => videoStream.addTrack(t));
+      } catch (err) {
+        /* mic optional — cam still works */
+        try { ping("camera ok — mic skipped"); } catch (e) {}
       }
-      return videoOnly;
-    } catch (err) {
-      throw lastErr || err;
     }
+    return videoStream;
   }
 
   async function openCam() {
@@ -240,9 +254,22 @@
     if (audioTrack) audioTrack.enabled = micOn;
     video.setAttribute("playsinline", "true");
     video.setAttribute("webkit-playsinline", "true");
+    video.setAttribute("autoplay", "true");
     video.muted = true;
+    video.playsInline = true;
     video.srcObject = stream;
-    await video.play();
+    // iOS needs a real user-gesture play; wait for metadata then play
+    await new Promise((resolve) => {
+      if (video.readyState >= 1) resolve();
+      else video.onloadedmetadata = () => resolve();
+    });
+    try {
+      await video.play();
+    } catch (err) {
+      // one more try after a tick
+      await new Promise((r) => setTimeout(r, 50));
+      await video.play();
+    }
     muteBtn.textContent = micOn ? "mic" : "mute";
   }
 
@@ -521,22 +548,34 @@
   }
 
   async function bootCam() {
+    if (startBtn.disabled) return;
+    startBtn.disabled = true;
+    const prevLabel = startBtn.textContent;
+    startBtn.textContent = "waiting for camera…";
+    ping("allow camera when asked");
     try {
       if (!gl) initGL();
       await openCam();
+      // music after cam so we don't fight the permission prompt
       try { await ensureBed(); } catch (err) { /* music optional */ }
       if (!raf) draw();
       gate.classList.add("hidden");
+      startBtn.disabled = false;
+      startBtn.textContent = prevLabel || "open lens";
       ping("lens live");
     } catch (err) {
+      stopStream();
       gate.classList.remove("hidden");
+      startBtn.disabled = false;
       startBtn.textContent = "try camera again";
-      ping(err && err.message ? err.message : "allow camera + mic");
+      const msg = err && err.name === "NotAllowedError"
+        ? "permission denied — check site settings"
+        : (err && err.message ? err.message : "allow camera");
+      ping(msg);
     }
   }
 
   startBtn.addEventListener("click", () => {
-    ensureBed().catch(() => {});
     bootCam();
   });
   document.addEventListener("visibilitychange", () => {
