@@ -202,24 +202,29 @@
   }
 
   async function getStream(mode) {
-    // Keep this dumb: one video call, then optional mic. No Permissions API
-    // (query({name:"camera"}) hangs forever on many iPhones).
-    // Do NOT timeout getUserMedia while the system Allow sheet is open —
-    // that sheet can sit until the user taps; racing it freezes the UI.
+    // One prompt when possible (smoother). No Permissions API (hangs on iPhone).
+    // Fall back to video-only, then attach mic separately if needed.
+    const videoIdeal = { facingMode: { ideal: mode } };
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: videoIdeal,
+        audio: !!micOn
+      });
+    } catch (err) {
+      /* continue */
+    }
     let videoStream;
     try {
       videoStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: mode } },
+        video: videoIdeal,
         audio: false
       });
     } catch (err) {
-      // Soft fallback — plain video:true (no facingMode)
       videoStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: false
       });
     }
-
     if (micOn) {
       try {
         const mic = await navigator.mediaDevices.getUserMedia({
@@ -356,15 +361,32 @@
   }
 
   async function ensureBed() {
+    if (!bed) throw new Error("track element missing");
     bed.loop = true;
     bed.playsInline = true;
     bed.setAttribute("playsinline", "true");
     bed.muted = false;
     bed.volume = jamOn ? 0.85 : 0;
-    const playNow = bed.play();
+    // Make sure the mp3 is actually ready (not a HTML 404 fallback)
+    if (!bed.src && bed.querySelector("source")) {
+      /* browser picks source */
+    }
+    if (bed.readyState < 2) {
+      try { bed.load(); } catch (e) {}
+      await withTimeout(new Promise((resolve, reject) => {
+        const ok = () => resolve();
+        const bad = () => reject(new Error("skate track failed to load"));
+        bed.addEventListener("canplay", ok, { once: true });
+        bed.addEventListener("error", bad, { once: true });
+      }), 20000, "skate track still loading — tap jam on");
+    }
+    // Wire Web Audio BEFORE play so iOS routes through the graph correctly
     try { await hookBedGraph(); } catch (err) {}
-    try { await playNow; } catch (err) {
-      try { await bed.play(); } catch (err2) { throw err2; }
+    try {
+      await bed.play();
+    } catch (err) {
+      await new Promise((r) => setTimeout(r, 40));
+      await bed.play();
     }
     if (speakerGain) speakerGain.gain.value = jamOn ? 0.8 : 0;
   }
@@ -552,7 +574,14 @@
     try {
       if (!gl) initGL();
       await openCam();
-      try { await withTimeout(ensureBed(), 4000, "music skipped"); } catch (err) { /* optional */ }
+      if (jamOn) {
+        try {
+          await ensureBed();
+          ping("skate and destroy");
+        } catch (err) {
+          ping(err && err.message ? err.message : "tap jam on for track");
+        }
+      }
       if (!raf) draw();
       gate.classList.add("hidden");
       startBtn.textContent = prev;
@@ -580,4 +609,5 @@
   });
 
   try { initGL(); } catch (err) { ping("webgl missing"); }
+  try { if (bed) bed.load(); } catch (err) {}
 })();
