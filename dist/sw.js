@@ -1,10 +1,11 @@
-const CACHE = "clipfish-v4";
+const CACHE = "clipfish-v5";
 const PRECACHE = [
   "./",
   "./index.html",
   "./app.js",
   "./manifest.webmanifest",
-  "./icons/icon.svg"
+  "./icons/icon.svg",
+  "./audio/skate-and-destroy.mp3"
 ];
 
 self.addEventListener("install", (event) => {
@@ -25,9 +26,8 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  const isAppJs = url.pathname.endsWith("/app.js") || url.pathname.endsWith("/sw.js");
-  // Network-first for app code so camera fixes land without clearing site data
-  if (isAppJs) {
+  const isAppCode = url.pathname.endsWith("/app.js") || url.pathname.endsWith("/sw.js") || url.pathname.endsWith("/index.html");
+  if (isAppCode) {
     event.respondWith(
       fetch(req).then((res) => {
         const copy = res.clone();
